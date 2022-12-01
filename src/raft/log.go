@@ -16,7 +16,7 @@ type Entry struct {
 	Index   int
 }
 
-func (l *Log) append(entries ...Entry)  {
+func (l *Log) append(entries ...Entry) {
 	l.Entries = append(l.Entries, entries...)
 }
 
@@ -32,7 +32,7 @@ func (l *Log) at(idx int) *Entry {
 	return &l.Entries[idx]
 }
 
-func (l *Log) truncate(idx int)  {
+func (l *Log) truncate(idx int) {
 	l.Entries = l.Entries[:idx]
 }
 
@@ -52,11 +52,10 @@ func (e *Entry) String() string {
 	return fmt.Sprint(e.Term)
 }
 
-
 func (l *Log) String() string {
 	nums := []string{}
 	for _, entry := range l.Entries {
-		nums = append(nums,  fmt.Sprintf("%4d", entry.Term))
+		nums = append(nums, fmt.Sprintf("%4d", entry.Term))
 	}
 	return fmt.Sprint(strings.Join(nums, "|"))
 }

@@ -26,10 +26,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"../labgob"
-	"../labrpc"
+	"raft-go/labgob"
+	"raft-go/labrpc"
 )
-
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -57,9 +56,9 @@ type ApplyMsg struct {
 type RaftState string
 
 const (
-	Follower RaftState = "Follower"
-	Candidate = "Candidate"
-	Leader  = "Leader"
+	Follower  RaftState = "Follower"
+	Candidate           = "Candidate"
+	Leader              = "Leader"
 )
 
 //
@@ -91,13 +90,13 @@ type Raft struct {
 	lastApplied int
 
 	// Volatile state on leaders:
-	nextIndex []int
+	nextIndex  []int
 	matchIndex []int
 
+	// 状态机
 	applyCh   chan ApplyMsg
 	applyCond *sync.Cond
 }
-
 
 //
 // save Raft's persistent state to stable storage,
@@ -108,13 +107,12 @@ func (rf *Raft) persist() {
 	DPrintVerbose("[%v]: STATE: %v", rf.me, rf.log.String())
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(rf.currentTerm)
-	e.Encode(rf.votedFor)
-	e.Encode(rf.log)
+	e.Encode(rf.currentTerm) // 服务器看到的最新任期(首次启动时初始化为0, 单调增加)
+	e.Encode(rf.votedFor)    // 当前任期内获得选票的候选人ID(如果没有则为空)
+	e.Encode(rf.log)         // 日志条目, 每个条目包含状态机的命令, 以及领导者收到条目的时间(第一个索引是1)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
-
 
 //
 // restore previously persisted state.
@@ -138,7 +136,6 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.log = logs
 	}
 }
-
 
 //
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -227,16 +224,19 @@ func (rf *Raft) ticker() {
 		// time.Sleep().
 		time.Sleep(rf.heartBeat)
 		rf.mu.Lock()
+
+		// Leader: 发送心跳包
 		if rf.state == Leader {
 			rf.appendEntries(true)
 		}
+
+		// 心跳超时, turn to Candidate, 重新选举Leader
 		if time.Now().After(rf.electionTime) {
 			rf.leaderElection()
 		}
 		rf.mu.Unlock()
 	}
 }
-
 
 //
 // the service or tester wants to create a Raft server. the ports
@@ -249,6 +249,47 @@ func (rf *Raft) ticker() {
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
 //
+
+/*
+	调用顺序如下:
+		1. Make() 调用 ticker() 和 applier()
+		2. ticker() 调用 leaderElection() if 心跳超时
+		3. leaderElection() 调用 candidateRequestVote()
+		4. candidateRequestVote() 调用 sendRequestVote()
+		5. sendRequestVote() 调用 RequestVote RPC (send RequestVote RPCs To other servers)
+			5.1 if Votes from majority: Become leader and send heartbeats
+			5.2 if RPC from leader (heartbeats): Become Follower
+*/
+
+/*
+	两个RPC: RequestVote RPC 和 AppendEntries RPC
+
+	AppendEntries RPC 是leader维护自己状态的, 每隔一段时间向其他的follower发送AppendEntries, 这段时间集群term不会发生变化.
+	并且AppendEntries也会携带者log-entry更新log index
+
+	调用顺序如下:
+		1. Make() 调用 ticker() 和 applier()
+		2. ticker() 调用 leaderElection() if 心跳超时
+		3. leaderElection() 调用 candidateRequestVote(serverId int, args *RequestVoteArgs, voteCounter *int, becomeLeader *sync.Once)
+
+			3.1 candidateRequestVote() 里, sendRequestVote(serverId int, args *RequestVoteArgs, reply *RequestVoteReply) 为reply赋值
+				sendRequestVote() 调用 RequestVote RPC (send RequestVote RPCs To other servers)
+
+			if 3.1 ok (调用RequestVote RPC ok && reply.Term == args.Term && reply.VoteGranted && voteCounter过半)
+				选票过半的节点成为Leader, Leader向每个服务器更新日志 (nextIndex[] 和 matchIndex[])
+
+				4. candidateRequestVote() 调用 appendEntries(心跳)
+					Leader 调用appendEntries(心跳)来复制日志条目, 这一步: leaderSendEntries(serverId int, args *AppendEntriesArg)
+				5. appendEntries(心跳) 调用 leaderSendEntries(peer, &args)
+				6. leaderSendEntries() 调用 sendAppendEntries(serverId, args, &reply)
+					6.1. sendAppendEntries() 调用 AppendEntries RPC 来赋值 reply
+						6.1.1 if 存在 T > currentTerm: set currentTerm = T, turn to Follower
+						6.1.2 if 存在 T < currentTerm: reset ElectionTimer
+						6.1.3 if state == Candidate: turn to Follower
+						6.1.4 else: Leader 补全和 Follower 之间的日志差异
+				7. 根据 reply 结构体的参数, 分情况处理日志复制
+					注: Leader 的4个规则
+*/
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
@@ -277,12 +318,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
+	// 执行选举逻辑
 	go rf.ticker()
 
 	go rf.applier()
 	return rf
 }
-
 
 func (rf *Raft) apply() {
 	rf.applyCond.Broadcast()
@@ -298,9 +339,9 @@ func (rf *Raft) applier() {
 		if rf.commitIndex > rf.lastApplied && rf.log.lastLog().Index > rf.lastApplied {
 			rf.lastApplied++
 			applyMsg := ApplyMsg{
-				CommandValid:  true,
-				Command:       rf.log.at(rf.lastApplied).Command,
-				CommandIndex:  rf.lastApplied,
+				CommandValid: true,
+				Command:      rf.log.at(rf.lastApplied).Command,
+				CommandIndex: rf.lastApplied,
 			}
 			DPrintVerbose("[%v]: COMMIT %d: %v", rf.me, rf.lastApplied, rf.commits())
 			rf.mu.Unlock()

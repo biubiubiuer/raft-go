@@ -8,8 +8,8 @@ package raft
 // test with the original before submitting.
 //
 
-import "../labgob"
-import "../labrpc"
+import "raft-go/labgob"
+import "raft-go/labrpc"
 import "bytes"
 import "log"
 import "sync"

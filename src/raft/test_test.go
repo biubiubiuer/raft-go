@@ -20,18 +20,21 @@ import "sync"
 const RaftElectionTimeout = 1000 * time.Millisecond
 
 func TestInitialElection2A(t *testing.T) {
-	servers := 3
-	cfg := make_config(t, servers, false, false)
+	servers := 3                                 // 初始化3个peer
+	cfg := make_config(t, servers, false, false) // 完成初始选举
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2A): initial election")
 
 	// is a leader elected?
-	cfg.checkOneLeader()
+	cfg.checkOneLeader() // 检查leader是否选举出来并且只有一个
 
 	// sleep a bit to avoid racing with followers learning of the
 	// election, then check that all peers agree on the term.
 	time.Sleep(50 * time.Millisecond)
+
+	// 完成leader选举后, 当前leader任期内的term 大于等于初始化的term
+	// 且后续没有网络异常的情况下这个term不会发生变化
 	term1 := cfg.checkTerms()
 	if term1 < 1 {
 		t.Fatalf("term is %v, but should be at least 1", term1)
@@ -39,17 +42,28 @@ func TestInitialElection2A(t *testing.T) {
 
 	// does the leader+term stay the same if there is no network failure?
 	time.Sleep(2 * RaftElectionTimeout)
+
+	// 过了一段时间, 确保term不会发生变化
 	term2 := cfg.checkTerms()
 	if term1 != term2 {
 		fmt.Printf("warning: term changed even though there were no failures")
 	}
 
 	// there should still be a leader.
+	// 仍然只有一个leader
 	cfg.checkOneLeader()
 
 	cfg.end()
 }
 
+/**
+TestReElection2A函数的测试内容:
+- 三个peer选举出一个leader
+- 一个peer异常, leader能够正常选出来
+- 两个peer异常, leader选举不出来, 因为已经超过大多数异常了
+- 恢复了一个peer之后又两个peer, 能够选举出来一个leader
+- 再加入一个peer之后不影响之前正常的leader
+*/
 func TestReElection2A(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)
